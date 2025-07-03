@@ -33,7 +33,7 @@ namespace ConfigurableStormController
 
             ModifySnowStorms = Config.Bind("2. Snow Storm", "EnableSnowModification", true,
                 "Enables/disables modifications to snow storms.");
-            SnowStormFrequencyMultiplier = Config.Bind("2. Snow Storm", "SnowFrequencyMultiplier", 0.5f,
+            SnowStormFrequencyMultiplier = Config.Bind("2. Snow Storm", "SnowFrequencyMultiplier", 1.0f,
                 new ConfigDescription("Storm frequency. >1: more, 1: normal, <1: less, 0: disabled.",
                 new AcceptableValueRange<float>(0f, 5f)));
 
