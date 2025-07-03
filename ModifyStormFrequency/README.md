@@ -1,6 +1,7 @@
 # Configurable Storm Controller
 
 This BepInEx plugin gives you complete control over the frequency of rain and snow storms in the game. You can make storms more or less frequent, or disable them entirely.
+NOTE: I think for settings to apply, a storm cycle has to happen at least once in your game, so if you set both to 0 and it happens, that's why. If everything works correctly, it should only happen once. Fingers crossed.
 
 ## Features
 *   **Separate Controls:** Adjust the frequency of snow storms and rain storms independently.
