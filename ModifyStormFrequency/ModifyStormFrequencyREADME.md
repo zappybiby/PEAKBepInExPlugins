@@ -1,9 +1,3 @@
-Of course. Here is the README formatted in GitHub-Flavored Markdown, perfect for a repository or release page.
-
-You can copy and paste the text below directly into a file named `README.md`.
-
----
-
 # Configurable Storm Controller
 
 This BepInEx plugin gives you complete control over the frequency of rain and snow storms in the game. You can make storms more or less frequent, or disable them entirely.
