@@ -33,7 +33,7 @@ Run the game with the plugin installed. It will make a config file for you.
 
     [2. Snow Storm]
     EnableSnowModification = true
-    SnowFrequencyMultiplier = 0.5
+    SnowFrequencyMultiplier = 1
 
     [3. Rain Storm]
     EnableRainModification = true
