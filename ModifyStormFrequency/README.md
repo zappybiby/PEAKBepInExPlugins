@@ -12,7 +12,7 @@ This BepInEx plugin gives you complete control over the frequency of rain and sn
 
 ## Installation
 
-1.  Make sure you have BepInEx installed correctly.
+1.  Make sure you have BepInEx installed correctly. (https://github.com/BepInEx/BepInEx/releases -> 5.4, x64 -> extract to where PEAK.exe is -> run game once to generate Bepinex files)
 2.  Download the `ConfigurableStormController.dll` file.
 3.  Place the `.dll` file inside your `[Game Directory]\BepInEx\plugins\` folder.
 
@@ -20,7 +20,7 @@ This BepInEx plugin gives you complete control over the frequency of rain and sn
 
 ### Step 1: First-Time Setup
 
-Before you can configure the mod, you must **run the game at least once** with the plugin installed. This will generate the necessary configuration file.
+Run the game with the plugin installed. It will make a config file for you.
 
 ### Step 2: Edit the Config File
 
