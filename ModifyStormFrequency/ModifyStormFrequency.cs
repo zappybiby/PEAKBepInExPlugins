@@ -1,109 +1,182 @@
 using BepInEx;
-using BepInEx.Configuration;
 using BepInEx.Logging;
-using HarmonyLib;
-using System.Reflection;
+using SettingsExtender; // Depends on https://thunderstore.io/c/peak/p/JSPAPP/Settings_Extender/
+using Unity.Mathematics;
 using UnityEngine;
+using UnityEngine.Localization;
+using UnityEngine.SceneManagement;
+using Zorro.Settings;
 
+// A single namespace for the entire plugin
 namespace ConfigurableStormController
 {
+    #region Main Plugin Class
     [BepInPlugin(PLUGIN_GUID, PLUGIN_NAME, PLUGIN_VERSION)]
     public class Plugin : BaseUnityPlugin
     {
         public const string PLUGIN_GUID = "com.example.configurablestormcontroller";
         public const string PLUGIN_NAME = "Configurable Storm Controller";
-        public const string PLUGIN_VERSION = "3.3.1";
+        public const string PLUGIN_VERSION = "1.0.1";
+        public const string SETTINGS_PAGE_NAME = "Storm Controller";
 
-        internal static ManualLogSource Log;
-        private readonly Harmony harmony = new Harmony(PLUGIN_GUID);
-
-        // Config Entries
-        internal static ConfigEntry<bool> PluginEnabled;
-        internal static ConfigEntry<bool> ModifySnowStorms;
-        internal static ConfigEntry<float> SnowStormFrequencyMultiplier;
-        internal static ConfigEntry<bool> ModifyRainStorms;
-        internal static ConfigEntry<float> RainStormFrequencyMultiplier;
+        internal static ManualLogSource Log = null!;
 
         private void Awake()
         {
             Log = Logger;
-            
-            PluginEnabled = Config.Bind("1. General", "EnablePlugin", true,
-                "Disables all plugin functionality if false. Requires restart.");
+            SettingsRegistry.Register(SETTINGS_PAGE_NAME);
+            SceneManager.sceneLoaded += OnSceneLoaded;
+            Log.LogInfo($"{PLUGIN_NAME} is loaded and ready.");
+        }
 
-            ModifySnowStorms = Config.Bind("2. Snow Storm", "EnableSnowModification", true,
-                "Enables/disables modifications to snow storms.");
-            SnowStormFrequencyMultiplier = Config.Bind("2. Snow Storm", "SnowFrequencyMultiplier", 1.0f,
-                new ConfigDescription("Storm frequency. >1: more, 1: normal, <1: less, 0: disabled.",
-                new AcceptableValueRange<float>(0f, 5f)));
+        private void Start()
+        {
+            var handler = SettingsHandler.Instance;
+            handler.AddSetting(new EnableModSetting());
+            handler.AddSetting(new EnableRainSetting());
+            handler.AddSetting(new RainFrequencySetting());
+            handler.AddSetting(new RainDurationSetting());
+            handler.AddSetting(new EnableSnowSetting());
+            handler.AddSetting(new SnowFrequencySetting());
+            handler.AddSetting(new SnowDurationSetting());
+            Log.LogInfo("Added all storm settings to the in-game UI.");
+        }
 
-            ModifyRainStorms = Config.Bind("3. Rain Storm", "EnableRainModification", true,
-                "Enables/disables modifications to rain storms.");
-            RainStormFrequencyMultiplier = Config.Bind("3. Rain Storm", "RainFrequencyMultiplier", 1.0f,
-                new ConfigDescription("Storm frequency. >1: more, 1: normal, <1: less, 0: disabled.",
-                new AcceptableValueRange<float>(0f, 5f)));
-
-            // Subscribe to the event for live config reloading.
-            Config.SettingChanged += OnSettingChanged;
-
-            if (PluginEnabled.Value)
+        private void OnSceneLoaded(Scene scene, LoadSceneMode mode)
+        {
+            if (scene.name.StartsWith("Level_"))
             {
-                ApplyHarmonyPatches();
+                Log.LogInfo($"Game scene '{scene.name}' loaded. Initializing Storm Controller...");
+                StormController.Initialize();
             }
         }
-
-        // Logs when a setting is changed in the config file during gameplay.
-        private void OnSettingChanged(object sender, SettingChangedEventArgs e)
-        {
-            Log.LogInfo($"Config setting changed: [{e.ChangedSetting.Definition.Section}] {e.ChangedSetting.Definition.Key}");
-        }
-
-        private void ApplyHarmonyPatches()
-        {
-            MethodInfo original = AccessTools.Method("WindChillZone:GetNextWindTime");
-            MethodInfo postfix = AccessTools.Method(typeof(StormPatch), nameof(StormPatch.ModifyStormDurationPostfix));
-            harmony.Patch(original, postfix: new HarmonyMethod(postfix));
-            Log.LogInfo("Plugin enabled and patched into storm controller.");
-        }
     }
+    #endregion
 
-    internal class StormPatch
+    #region Storm Controller Logic
+    public static class StormController
     {
-        // Runs after WindChillZone.GetNextWindTime to modify the calm period between storms.
-        public static void ModifyStormDurationPostfix(MonoBehaviour __instance, bool windActive, ref float __result)
+        // FIX: Initialize with null! to suppress CS8618. We guarantee they are set in Initialize before use.
+        private static WindChillZone _rainZone = null!;
+        private static WindChillZone _snowZone = null!;
+        private static Vector2 _defaultRainOn, _defaultRainOff;
+        private static Vector2 _defaultSnowOn, _defaultSnowOff;
+        private static bool _isInitialized;
+
+        public static void Initialize()
         {
-            if (windActive) return;
-
-            StormVisual stormVisual = __instance.GetComponent<StormVisual>();
-            if (stormVisual == null) return;
-
-            if (stormVisual.stormType == StormVisual.StormType.Snow && Plugin.ModifySnowStorms.Value)
+            var zones = Object.FindObjectsByType<WindChillZone>(FindObjectsSortMode.None);
+            _rainZone = null!; _snowZone = null!; // Temporarily satisfy compiler before loop
+            foreach (var zone in zones)
             {
-                ApplyFrequencyModification("SNOW", Plugin.SnowStormFrequencyMultiplier.Value, ref __result);
+                var visual = zone.GetComponentInChildren<StormVisual>(true);
+                if (visual.stormType == StormVisual.StormType.Rain) _rainZone = zone;
+                else if (visual.stormType == StormVisual.StormType.Snow) _snowZone = zone;
             }
-            else if (stormVisual.stormType == StormVisual.StormType.Rain && Plugin.ModifyRainStorms.Value)
+
+            if (_rainZone == null || _snowZone == null)
             {
-                ApplyFrequencyModification("RAIN", Plugin.RainStormFrequencyMultiplier.Value, ref __result);
-            }
-        }
-        
-        // Helper method to apply the frequency multiplier to the storm timer.
-        private static void ApplyFrequencyModification(string stormTypeName, float userMultiplier, ref float timerResult)
-        {
-            if (Mathf.Approximately(userMultiplier, 1.0f)) return;
-
-            float originalTime = timerResult;
-
-            if (userMultiplier <= 0.0f) {
-                timerResult = float.MaxValue;
-            } else {
-                timerResult /= userMultiplier;
+                Plugin.Log.LogError("Failed to find both Rain and Snow storm controllers!");
+                _isInitialized = false;
+                return;
             }
             
-            if (!Mathf.Approximately(originalTime, timerResult))
+            _defaultRainOn = _rainZone.windTimeRangeOn;
+            _defaultRainOff = _rainZone.windTimeRangeOff;
+            _defaultSnowOn = _snowZone.windTimeRangeOn;
+            _defaultSnowOff = _snowZone.windTimeRangeOff;
+            
+            _isInitialized = true;
+            Plugin.Log.LogInfo("Storm Controller initialized successfully.");
+            ApplyAllSettings();
+        }
+
+        public static void ApplyAllSettings()
+        {
+            if (!_isInitialized) return;
+
+            var settings = SettingsHandler.Instance;
+            bool isModEnabled = settings.GetSetting<EnableModSetting>().Value;
+            
+            Plugin.Log.LogInfo($"Applying all settings. Master switch is {(isModEnabled ? "ON" : "OFF")}.");
+
+            if (!isModEnabled)
             {
-                Plugin.Log.LogInfo($"Applied new {stormTypeName} frequency. Calm Period: {timerResult:F1}s (Multiplier: {userMultiplier}x)");
+                RestoreVanillaValues();
+                return;
             }
+            
+            bool rainEnabled = settings.GetSetting<EnableRainSetting>().Value;
+            if (rainEnabled)
+            {
+                float rainFreq = settings.GetSetting<RainFrequencySetting>().Value;
+                float rainDur = settings.GetSetting<RainDurationSetting>().Value;
+                _rainZone.windTimeRangeOff = new Vector2(_defaultRainOff.x / rainFreq, _defaultRainOff.y / rainFreq);
+                _rainZone.windTimeRangeOn = new Vector2(rainDur * 0.9f, rainDur * 1.1f);
+            }
+            else { _rainZone.windTimeRangeOff = new Vector2(float.MaxValue, float.MaxValue); if (_rainZone.windActive) _rainZone.windActive = false; }
+            
+            bool snowEnabled = settings.GetSetting<EnableSnowSetting>().Value;
+            if (snowEnabled)
+            {
+                float snowFreq = settings.GetSetting<SnowFrequencySetting>().Value;
+                float snowDur = settings.GetSetting<SnowDurationSetting>().Value;
+                _snowZone.windTimeRangeOff = new Vector2(_defaultSnowOff.x / snowFreq, _defaultSnowOff.y / snowFreq);
+                _snowZone.windTimeRangeOn = new Vector2(snowDur * 0.9f, snowDur * 1.1f);
+            }
+            else { _snowZone.windTimeRangeOff = new Vector2(float.MaxValue, float.MaxValue); if (_snowZone.windActive) _snowZone.windActive = false; }
+        }
+
+        private static void RestoreVanillaValues()
+        {
+            if (!_isInitialized) return;
+            Plugin.Log.LogInfo("Restoring vanilla storm behavior.");
+            _rainZone.windTimeRangeOn = _defaultRainOn;
+            _rainZone.windTimeRangeOff = _defaultRainOff;
+            _snowZone.windTimeRangeOn = _defaultSnowOn;
+            _snowZone.windTimeRangeOff = _defaultSnowOff;
         }
     }
+    #endregion
+
+    #region UI Settings Classes
+    public class EnableModSetting : BoolSetting, IExposedSetting
+    {
+        public string GetDisplayName() => "Enable Storm Controller";
+        protected override bool GetDefaultValue() => true;
+        public string GetCategory() => SettingsRegistry.GetPageId(Plugin.SETTINGS_PAGE_NAME);
+        public override void ApplyValue() => StormController.ApplyAllSettings();
+        // FIX: Use null-forgiving operator (!) to suppress CS8625.
+        // This tells the compiler that null is an intentional value handled by the base class.
+        public override LocalizedString OffString => null!;
+        public override LocalizedString OnString => null!;
+    }
+
+    public abstract class StepFloatSetting : FloatSetting, IExposedSetting
+    {
+        protected abstract float GetStep();
+        public override float Clamp(float value) { float step = GetStep(); if (step > 0) value = Mathf.Round(value / step) * step; return base.Clamp(value); }
+        public abstract string GetDisplayName();
+        public string GetCategory() => SettingsRegistry.GetPageId(Plugin.SETTINGS_PAGE_NAME);
+        public override void ApplyValue() => StormController.ApplyAllSettings();
+    }
+    
+    public abstract class StormToggleSetting : BoolSetting, IExposedSetting
+    {
+        public abstract string GetDisplayName();
+        public string GetCategory() => SettingsRegistry.GetPageId(Plugin.SETTINGS_PAGE_NAME);
+
+        public override LocalizedString OffString => null!;
+        public override LocalizedString OnString => null!;
+        public override void ApplyValue() => StormController.ApplyAllSettings();
+    }
+    
+    public class EnableRainSetting : StormToggleSetting { public override string GetDisplayName() => "Enable Rain"; protected override bool GetDefaultValue() => true; }
+    public class RainFrequencySetting : StepFloatSetting { public override string GetDisplayName() => "Rain Frequency"; protected override float GetDefaultValue() => 1.0f; protected override float2 GetMinMaxValue() => new(0.1f, 2f); protected override float GetStep() => 0.1f; public override string Expose(float result) => result.ToString("F1") + "x"; }
+    public class RainDurationSetting : StepFloatSetting { public override string GetDisplayName() => "Rain Duration"; protected override float GetDefaultValue() => 30f; protected override float2 GetMinMaxValue() => new(15f, 90f); protected override float GetStep() => 5f; public override string Expose(float result) => result.ToString("F0") + "s"; }
+
+    public class EnableSnowSetting : StormToggleSetting { public override string GetDisplayName() => "Enable Snow"; protected override bool GetDefaultValue() => true; }
+    public class SnowFrequencySetting : StepFloatSetting { public override string GetDisplayName() => "Snow Frequency"; protected override float GetDefaultValue() => 1.0f; protected override float2 GetMinMaxValue() => new(0.1f, 2f); protected override float GetStep() => 0.1f; public override string Expose(float result) => result.ToString("F1") + "x"; }
+    public class SnowDurationSetting : StepFloatSetting { public override string GetDisplayName() => "Snow Duration"; protected override float GetDefaultValue() => 20f; protected override float2 GetMinMaxValue() => new(15f, 90f); protected override float GetStep() => 5f; public override string Expose(float result) => result.ToString("F0") + "s"; }
+    #endregion
 }
